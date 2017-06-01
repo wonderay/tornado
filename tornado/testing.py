@@ -10,7 +10,7 @@
   for the tornado.autoreload module to rerun the tests when code changes.
 """
 
-from __future__ import absolute_import, division, print_function, with_statement
+from __future__ import absolute_import, division, print_function
 
 try:
     from tornado import gen
@@ -72,24 +72,6 @@ else:
         import unittest2 as unittest  # type: ignore
     except ImportError:
         import unittest  # type: ignore
-
-_next_port = 10000
-
-
-def get_unused_port():
-    """Returns a (hopefully) unused port number.
-
-    This function does not guarantee that the port it returns is available,
-    only that a series of get_unused_port calls in a single process return
-    distinct ports.
-
-    .. deprecated::
-       Use bind_unused_port instead, which is guaranteed to find an unused port.
-    """
-    global _next_port
-    port = _next_port
-    _next_port = _next_port + 1
-    return port
 
 
 def bind_unused_port(reuse_port=False):
@@ -166,8 +148,7 @@ class AsyncTestCase(unittest.TestCase):
     callbacks should call ``self.stop()`` to signal completion.
 
     By default, a new `.IOLoop` is constructed for each test and is available
-    as ``self.io_loop``.  This `.IOLoop` should be used in the construction of
-    HTTP clients/servers, etc.  If the code being tested requires a
+    as ``self.io_loop``.  If the code being tested requires a
     global `.IOLoop`, subclasses should override `get_new_ioloop` to return it.
 
     The `.IOLoop`'s ``start`` and ``stop`` methods should not be
@@ -182,7 +163,7 @@ class AsyncTestCase(unittest.TestCase):
         class MyTestCase(AsyncTestCase):
             @tornado.testing.gen_test
             def test_http_fetch(self):
-                client = AsyncHTTPClient(self.io_loop)
+                client = AsyncHTTPClient()
                 response = yield client.fetch("http://www.tornadoweb.org")
                 # Test contents of response
                 self.assertIn("FriendFeed", response.body)
@@ -190,7 +171,7 @@ class AsyncTestCase(unittest.TestCase):
         # This test uses argument passing between self.stop and self.wait.
         class MyTestCase2(AsyncTestCase):
             def test_http_fetch(self):
-                client = AsyncHTTPClient(self.io_loop)
+                client = AsyncHTTPClient()
                 client.fetch("http://www.tornadoweb.org/", self.stop)
                 response = self.wait()
                 # Test contents of response
@@ -199,7 +180,7 @@ class AsyncTestCase(unittest.TestCase):
         # This test uses an explicit callback-based style.
         class MyTestCase3(AsyncTestCase):
             def test_http_fetch(self):
-                client = AsyncHTTPClient(self.io_loop)
+                client = AsyncHTTPClient()
                 client.fetch("http://www.tornadoweb.org/", self.handle_fetch)
                 self.wait()
 
@@ -235,13 +216,11 @@ class AsyncTestCase(unittest.TestCase):
         # Clean up Subprocess, so it can be used again with a new ioloop.
         Subprocess.uninitialize()
         self.io_loop.clear_current()
-        if (not IOLoop.initialized() or
-                self.io_loop is not IOLoop.instance()):
-            # Try to clean up any file descriptors left open in the ioloop.
-            # This avoids leaks, especially when tests are run repeatedly
-            # in the same process with autoreload (because curl does not
-            # set FD_CLOEXEC on its file descriptors)
-            self.io_loop.close(all_fds=True)
+        # Try to clean up any file descriptors left open in the ioloop.
+        # This avoids leaks, especially when tests are run repeatedly
+        # in the same process with autoreload (because curl does not
+        # set FD_CLOEXEC on its file descriptors)
+        self.io_loop.close(all_fds=True)
         super(AsyncTestCase, self).tearDown()
         # In case an exception escaped or the StackContext caught an exception
         # when there wasn't a wait() to re-raise it, do so here.
@@ -382,11 +361,10 @@ class AsyncHTTPTestCase(AsyncTestCase):
         self.http_server.add_sockets([sock])
 
     def get_http_client(self):
-        return AsyncHTTPClient(io_loop=self.io_loop)
+        return AsyncHTTPClient()
 
     def get_http_server(self):
-        return HTTPServer(self._app, io_loop=self.io_loop,
-                          **self.get_httpserver_options())
+        return HTTPServer(self._app, **self.get_httpserver_options())
 
     def get_app(self):
         """Should be overridden by subclasses to return a
@@ -395,14 +373,20 @@ class AsyncHTTPTestCase(AsyncTestCase):
         raise NotImplementedError()
 
     def fetch(self, path, **kwargs):
-        """Convenience method to synchronously fetch a url.
+        """Convenience method to synchronously fetch a URL.
 
         The given path will be appended to the local server's host and
         port.  Any additional kwargs will be passed directly to
         `.AsyncHTTPClient.fetch` (and so could be used to pass
         ``method="POST"``, ``body="..."``, etc).
+
+        If the path begins with http:// or https://, it will be treated as a
+        full URL and will be fetched as-is.
         """
-        self.http_client.fetch(self.get_url(path), self.stop, **kwargs)
+        if path.lower().startswith(('http://', 'https://')):
+            self.http_client.fetch(path, self.stop, **kwargs)
+        else:
+            self.http_client.fetch(self.get_url(path), self.stop, **kwargs)
         return self.wait()
 
     def get_httpserver_options(self):
@@ -430,9 +414,7 @@ class AsyncHTTPTestCase(AsyncTestCase):
         self.http_server.stop()
         self.io_loop.run_sync(self.http_server.close_all_connections,
                               timeout=get_async_test_timeout())
-        if (not IOLoop.initialized() or
-                self.http_client.io_loop is not IOLoop.instance()):
-            self.http_client.close()
+        self.http_client.close()
         super(AsyncHTTPTestCase, self).tearDown()
 
 
@@ -442,7 +424,7 @@ class AsyncHTTPSTestCase(AsyncHTTPTestCase):
     Interface is generally the same as `AsyncHTTPTestCase`.
     """
     def get_http_client(self):
-        return AsyncHTTPClient(io_loop=self.io_loop, force_instance=True,
+        return AsyncHTTPClient(force_instance=True,
                                defaults=dict(validate_cert=False))
 
     def get_httpserver_options(self):
@@ -656,7 +638,9 @@ def main(**kwargs):
 
     This test runner is essentially equivalent to `unittest.main` from
     the standard library, but adds support for tornado-style option
-    parsing and log formatting.
+    parsing and log formatting. It is *not* necessary to use this
+    `main` function to run tests using `AsyncTestCase`; these tests
+    are self-contained and can run with any test runner.
 
     The easiest way to run a test is via the command line::
 
@@ -734,6 +718,7 @@ def main(**kwargs):
         else:
             gen_log.error('FAIL')
         raise
+
 
 if __name__ == '__main__':
     main()

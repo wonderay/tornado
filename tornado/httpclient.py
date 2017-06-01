@@ -38,7 +38,7 @@ To select ``curl_httpclient``, call `AsyncHTTPClient.configure` at startup::
     AsyncHTTPClient.configure("tornado.curl_httpclient.CurlAsyncHTTPClient")
 """
 
-from __future__ import absolute_import, division, print_function, with_statement
+from __future__ import absolute_import, division, print_function
 
 import functools
 import time
@@ -46,7 +46,7 @@ import weakref
 
 from tornado.concurrent import TracebackFuture
 from tornado.escape import utf8, native_str
-from tornado import httputil, stack_context
+from tornado import gen, httputil, stack_context
 from tornado.ioloop import IOLoop
 from tornado.util import Configurable
 
@@ -75,7 +75,10 @@ class HTTPClient(object):
         self._io_loop = IOLoop(make_current=False)
         if async_client_class is None:
             async_client_class = AsyncHTTPClient
-        self._async_client = async_client_class(self._io_loop, **kwargs)
+        # Create the client while our IOLoop is "current", without
+        # clobbering the thread's real current IOLoop (if any).
+        self._async_client = self._io_loop.run_sync(
+            gen.coroutine(lambda: async_client_class(**kwargs)))
         self._closed = False
 
     def __del__(self):
@@ -120,12 +123,12 @@ class AsyncHTTPClient(Configurable):
     The constructor for this class is magic in several respects: It
     actually creates an instance of an implementation-specific
     subclass, and instances are reused as a kind of pseudo-singleton
-    (one per `.IOLoop`).  The keyword argument ``force_instance=True``
-    can be used to suppress this singleton behavior.  Unless
-    ``force_instance=True`` is used, no arguments other than
-    ``io_loop`` should be passed to the `AsyncHTTPClient` constructor.
-    The implementation subclass as well as arguments to its
-    constructor can be set with the static method `configure()`
+    (one per `.IOLoop`). The keyword argument ``force_instance=True``
+    can be used to suppress this singleton behavior. Unless
+    ``force_instance=True`` is used, no arguments should be passed to
+    the `AsyncHTTPClient` constructor. The implementation subclass as
+    well as arguments to its constructor can be set with the static
+    method `configure()`
 
     All `AsyncHTTPClient` implementations support a ``defaults``
     keyword argument, which can be used to set default values for
@@ -137,8 +140,9 @@ class AsyncHTTPClient(Configurable):
         client = AsyncHTTPClient(force_instance=True,
             defaults=dict(user_agent="MyUserAgent"))
 
-    .. versionchanged:: 4.1
-       The ``io_loop`` argument is deprecated.
+    .. versionchanged:: 5.0
+       The ``io_loop`` argument (deprecated since version 4.1) has been removed.
+
     """
     @classmethod
     def configurable_base(cls):
@@ -156,16 +160,15 @@ class AsyncHTTPClient(Configurable):
             setattr(cls, attr_name, weakref.WeakKeyDictionary())
         return getattr(cls, attr_name)
 
-    def __new__(cls, io_loop=None, force_instance=False, **kwargs):
-        io_loop = io_loop or IOLoop.current()
+    def __new__(cls, force_instance=False, **kwargs):
+        io_loop = IOLoop.current()
         if force_instance:
             instance_cache = None
         else:
             instance_cache = cls._async_clients()
         if instance_cache is not None and io_loop in instance_cache:
             return instance_cache[io_loop]
-        instance = super(AsyncHTTPClient, cls).__new__(cls, io_loop=io_loop,
-                                                       **kwargs)
+        instance = super(AsyncHTTPClient, cls).__new__(cls, **kwargs)
         # Make sure the instance knows which cache to remove itself from.
         # It can't simply call _async_clients() because we may be in
         # __new__(AsyncHTTPClient) but instance.__class__ may be
@@ -175,8 +178,8 @@ class AsyncHTTPClient(Configurable):
             instance_cache[instance.io_loop] = instance
         return instance
 
-    def initialize(self, io_loop, defaults=None):
-        self.io_loop = io_loop
+    def initialize(self, defaults=None):
+        self.io_loop = IOLoop.current()
         self.defaults = dict(HTTPRequest._DEFAULTS)
         if defaults is not None:
             self.defaults.update(defaults)
@@ -423,6 +426,9 @@ class HTTPRequest(object):
 
         .. versionadded:: 4.2
            The ``ssl_options`` argument.
+
+        .. versionadded:: 4.5
+           The ``proxy_auth_mode`` argument.
         """
         # Note that some of these attributes go through property setters
         # defined below.
@@ -669,6 +675,7 @@ def main():
         if options.print_body:
             print(native_str(response.body))
     client.close()
+
 
 if __name__ == "__main__":
     main()

@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 
-from __future__ import absolute_import, division, print_function, with_statement
+from __future__ import absolute_import, division, print_function
 import gc
 import locale  # system locale module, not tornado.locale
 import logging
@@ -184,6 +184,7 @@ def main():
             logging.error("logged %d warnings and %d errors",
                           log_counter.warning_count, log_counter.error_count)
             sys.exit(1)
+
 
 if __name__ == '__main__':
     main()

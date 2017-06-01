@@ -56,7 +56,7 @@ request.
 
 """
 
-from __future__ import absolute_import, division, print_function, with_statement
+from __future__ import absolute_import, division, print_function
 
 import base64
 import binascii
@@ -319,10 +319,7 @@ class RequestHandler(object):
         if reason is not None:
             self._reason = escape.native_str(reason)
         else:
-            try:
-                self._reason = httputil.responses[status_code]
-            except KeyError:
-                raise ValueError("unknown status code %d" % status_code)
+            self._reason = httputil.responses.get(status_code, "Unknown")
 
     def get_status(self):
         """Returns the status code for our response."""
@@ -521,18 +518,28 @@ class RequestHandler(object):
         return self.request.cookies
 
     def get_cookie(self, name, default=None):
-        """Gets the value of the cookie with the given name, else default."""
+        """Returns the value of the request cookie with the given name.
+
+        If the named cookie is not present, returns ``default``.
+
+        This method only returns cookies that were present in the request.
+        It does not see the outgoing cookies set by `set_cookie` in this
+        handler.
+        """
         if self.request.cookies is not None and name in self.request.cookies:
             return self.request.cookies[name].value
         return default
 
     def set_cookie(self, name, value, domain=None, expires=None, path="/",
                    expires_days=None, **kwargs):
-        """Sets the given cookie name/value with the given options.
+        """Sets an outgoing cookie name/value with the given options.
 
-        Additional keyword arguments are set on the Cookie.Morsel
+        Newly-set cookies are not immediately visible via `get_cookie`;
+        they are not present until the next request.
+
+        Additional keyword arguments are set on the cookies.Morsel
         directly.
-        See https://docs.python.org/2/library/cookie.html#Cookie.Morsel
+        See https://docs.python.org/3/library/http.cookies.html#http.cookies.Morsel
         for available attributes.
         """
         # The cookie library only accepts type str, in both python 2 and 3
@@ -574,6 +581,9 @@ class RequestHandler(object):
         path and domain to clear a cookie as were used when that cookie
         was set (but there is no way to find out on the server side
         which values were used for a given cookie).
+
+        Similar to `set_cookie`, the effect of this method will not be
+        seen until the following request.
         """
         expires = datetime.datetime.utcnow() - datetime.timedelta(days=365)
         self.set_cookie(name, value="", path=path, expires=expires,
@@ -584,6 +594,9 @@ class RequestHandler(object):
 
         See `clear_cookie` for more information on the path and domain
         parameters.
+
+        Similar to `set_cookie`, the effect of this method will not be
+        seen until the following request.
 
         .. versionchanged:: 3.2
 
@@ -608,6 +621,9 @@ class RequestHandler(object):
 
         Secure cookies may contain arbitrary byte values, not just unicode
         strings (unlike regular cookies)
+
+        Similar to `set_cookie`, the effect of this method will not be
+        seen until the following request.
 
         .. versionchanged:: 3.2.1
 
@@ -647,6 +663,10 @@ class RequestHandler(object):
 
         The decoded cookie value is returned as a byte string (unlike
         `get_cookie`).
+
+        Similar to `get_cookie`, this method only returns cookies that
+        were present in the request. It does not see outgoing cookies set by
+        `set_secure_cookie` in this handler.
 
         .. versionchanged:: 3.2.1
 
@@ -756,45 +776,21 @@ class RequestHandler(object):
             if body_part:
                 html_bodies.append(utf8(body_part))
 
-        def is_absolute(path):
-            return any(path.startswith(x) for x in ["/", "http:", "https:"])
         if js_files:
             # Maintain order of JavaScript files given by modules
-            paths = []
-            unique_paths = set()
-            for path in js_files:
-                if not is_absolute(path):
-                    path = self.static_url(path)
-                if path not in unique_paths:
-                    paths.append(path)
-                    unique_paths.add(path)
-            js = ''.join('<script src="' + escape.xhtml_escape(p) +
-                         '" type="text/javascript"></script>'
-                         for p in paths)
+            js = self.render_linked_js(js_files)
             sloc = html.rindex(b'</body>')
             html = html[:sloc] + utf8(js) + b'\n' + html[sloc:]
         if js_embed:
-            js = b'<script type="text/javascript">\n//<![CDATA[\n' + \
-                b'\n'.join(js_embed) + b'\n//]]>\n</script>'
+            js = self.render_embed_js(js_embed)
             sloc = html.rindex(b'</body>')
             html = html[:sloc] + js + b'\n' + html[sloc:]
         if css_files:
-            paths = []
-            unique_paths = set()
-            for path in css_files:
-                if not is_absolute(path):
-                    path = self.static_url(path)
-                if path not in unique_paths:
-                    paths.append(path)
-                    unique_paths.add(path)
-            css = ''.join('<link href="' + escape.xhtml_escape(p) + '" '
-                          'type="text/css" rel="stylesheet"/>'
-                          for p in paths)
+            css = self.render_linked_css(css_files)
             hloc = html.index(b'</head>')
             html = html[:hloc] + utf8(css) + b'\n' + html[hloc:]
         if css_embed:
-            css = b'<style type="text/css">\n' + b'\n'.join(css_embed) + \
-                b'\n</style>'
+            css = self.render_embed_css(css_embed)
             hloc = html.index(b'</head>')
             html = html[:hloc] + css + b'\n' + html[hloc:]
         if html_heads:
@@ -804,6 +800,64 @@ class RequestHandler(object):
             hloc = html.index(b'</body>')
             html = html[:hloc] + b''.join(html_bodies) + b'\n' + html[hloc:]
         self.finish(html)
+
+    def render_linked_js(self, js_files):
+        """Default method used to render the final js links for the
+        rendered webpage.
+
+        Override this method in a sub-classed controller to change the output.
+        """
+        paths = []
+        unique_paths = set()
+
+        for path in js_files:
+            if not is_absolute(path):
+                path = self.static_url(path)
+            if path not in unique_paths:
+                paths.append(path)
+                unique_paths.add(path)
+
+        return ''.join('<script src="' + escape.xhtml_escape(p) +
+                       '" type="text/javascript"></script>'
+                       for p in paths)
+
+    def render_embed_js(self, js_embed):
+        """Default method used to render the final embedded js for the
+        rendered webpage.
+
+        Override this method in a sub-classed controller to change the output.
+        """
+        return b'<script type="text/javascript">\n//<![CDATA[\n' + \
+               b'\n'.join(js_embed) + b'\n//]]>\n</script>'
+
+    def render_linked_css(self, css_files):
+        """Default method used to render the final css links for the
+        rendered webpage.
+
+        Override this method in a sub-classed controller to change the output.
+        """
+        paths = []
+        unique_paths = set()
+
+        for path in css_files:
+            if not is_absolute(path):
+                path = self.static_url(path)
+            if path not in unique_paths:
+                paths.append(path)
+                unique_paths.add(path)
+
+        return ''.join('<link href="' + escape.xhtml_escape(p) + '" '
+                       'type="text/css" rel="stylesheet"/>'
+                       for p in paths)
+
+    def render_embed_css(self, css_embed):
+        """Default method used to render the final embedded css for the
+        rendered webpage.
+
+        Override this method in a sub-classed controller to change the output.
+        """
+        return b'<style type="text/css">\n' + b'\n'.join(css_embed) + \
+               b'\n</style>'
 
     def render_string(self, template_name, **kwargs):
         """Generate the given template with the given arguments.
@@ -959,6 +1013,9 @@ class RequestHandler(object):
         self._log()
         self._finished = True
         self.on_finish()
+        self._break_cycles()
+
+    def _break_cycles(self):
         # Break up a reference cycle between this handler and the
         # _ui_module closures to allow for faster GC on CPython.
         self.ui = None
@@ -1524,11 +1581,7 @@ class RequestHandler(object):
             # send a response.
             return
         if isinstance(e, HTTPError):
-            if e.status_code not in httputil.responses and not e.reason:
-                gen_log.error("Bad HTTP status code: %d", e.status_code)
-                self.send_error(500, exc_info=sys.exc_info())
-            else:
-                self.send_error(e.status_code, exc_info=sys.exc_info())
+            self.send_error(e.status_code, exc_info=sys.exc_info())
         else:
             self.send_error(500, exc_info=sys.exc_info())
 
@@ -1671,10 +1724,6 @@ def stream_request_body(cls):
       until those futures have completed.
     * The regular HTTP method (``post``, ``put``, etc) will be called after
       the entire body has been read.
-
-    There is a subtle interaction between ``data_received`` and asynchronous
-    ``prepare``: The first call to ``data_received`` may occur at any point
-    after the call to ``prepare`` has returned *or yielded*.
 
     See the `file receiver demo <https://github.com/tornadoweb/tornado/tree/master/demos/file_upload/>`_
     for example usage.
@@ -1834,6 +1883,8 @@ class Application(ReversibleRouter):
     `StaticFileHandler` can be specified with the
     ``static_handler_class`` setting.
 
+    .. versionchanged:: 4.5
+       Integration with the new `tornado.routing` module.
     """
     def __init__(self, handlers=None, default_host=None, transforms=None,
                  **settings):
@@ -2218,6 +2269,9 @@ class RedirectHandler(RequestHandler):
 
     Use Python's :ref:`format string syntax <formatstrings>` to customize how
     values are substituted.
+
+    .. versionchanged:: 4.5
+       Added support for substitutions into the destination URL.
     """
     def initialize(self, url, permanent=True):
         self._url = url
@@ -3084,6 +3138,7 @@ def create_signed_value(secret, name, value, version=None, clock=None,
     else:
         raise ValueError("Unsupported version %d" % version)
 
+
 # A leading version number in decimal
 # with no leading zeros, followed by a pipe.
 _signed_value_version_re = re.compile(br"^([1-9][0-9]*)\|(.*)$")
@@ -3240,3 +3295,7 @@ def _create_signature_v2(secret, s):
     hash = hmac.new(utf8(secret), digestmod=hashlib.sha256)
     hash.update(utf8(s))
     return utf8(hash.hexdigest())
+
+
+def is_absolute(path):
+    return any(path.startswith(x) for x in ["/", "http:", "https:"])
