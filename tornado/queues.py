@@ -166,8 +166,13 @@ class Queue(object):
     def put(self, item, timeout=None):
         """Put an item into the queue, perhaps waiting until there is room.
 
-        Returns a Future, which raises `tornado.gen.TimeoutError` after a
+        Returns a Future, which raises `tornado.util.TimeoutError` after a
         timeout.
+
+        ``timeout`` may be a number denoting a time (on the same
+        scale as `tornado.ioloop.IOLoop.time`, normally `time.time`), or a
+        `datetime.timedelta` object for a deadline relative to the
+        current time.
         """
         try:
             self.put_nowait(item)
@@ -199,7 +204,12 @@ class Queue(object):
         """Remove and return an item from the queue.
 
         Returns a Future which resolves once an item is available, or raises
-        `tornado.gen.TimeoutError` after a timeout.
+        `tornado.util.TimeoutError` after a timeout.
+
+        ``timeout`` may be a number denoting a time (on the same
+        scale as `tornado.ioloop.IOLoop.time`, normally `time.time`), or a
+        `datetime.timedelta` object for a deadline relative to the
+        current time.
         """
         future = Future()
         try:
@@ -248,7 +258,7 @@ class Queue(object):
     def join(self, timeout=None):
         """Block until all items in the queue are processed.
 
-        Returns a Future, which raises `tornado.gen.TimeoutError` after a
+        Returns a Future, which raises `tornado.util.TimeoutError` after a
         timeout.
         """
         return self._finished.wait(timeout)

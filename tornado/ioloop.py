@@ -48,7 +48,7 @@ from tornado.concurrent import TracebackFuture, is_future
 from tornado.log import app_log, gen_log
 from tornado.platform.auto import set_close_exec, Waker
 from tornado import stack_context
-from tornado.util import PY3, Configurable, errno_from_exception, timedelta_to_seconds
+from tornado.util import PY3, Configurable, errno_from_exception, timedelta_to_seconds, TimeoutError
 
 try:
     import signal
@@ -61,12 +61,13 @@ if PY3:
 else:
     import thread
 
+try:
+    import asyncio
+except ImportError:
+    asyncio = None
+
 
 _POLL_TIMEOUT = 3600.0
-
-
-class TimeoutError(Exception):
-    pass
 
 
 class IOLoop(Configurable):
@@ -242,7 +243,13 @@ class IOLoop(Configurable):
         """
         current = getattr(IOLoop._current, "instance", None)
         if current is None and instance:
-            current = IOLoop()
+            current = None
+            if asyncio is not None:
+                from tornado.platform.asyncio import AsyncIOLoop, AsyncIOMainLoop
+                if IOLoop.configured_class() is AsyncIOLoop:
+                    current = AsyncIOMainLoop()
+            if current is None:
+                current = IOLoop()
             if IOLoop._current.instance is not current:
                 raise RuntimeError("new IOLoop did not become current")
         return current
@@ -276,6 +283,9 @@ class IOLoop(Configurable):
 
     @classmethod
     def configurable_default(cls):
+        if asyncio is not None:
+            from tornado.platform.asyncio import AsyncIOLoop
+            return AsyncIOLoop
         return PollIOLoop
 
     def initialize(self, make_current=None):
@@ -443,7 +453,7 @@ class IOLoop(Configurable):
 
         The keyword-only argument ``timeout`` may be used to set
         a maximum duration for the function.  If the timeout expires,
-        a `TimeoutError` is raised.
+        a `tornado.util.TimeoutError` is raised.
 
         This method is useful in conjunction with `tornado.gen.coroutine`
         to allow asynchronous calls in a ``main()`` function::
